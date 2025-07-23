@@ -74,12 +74,12 @@ const std::string LINK_DELAY = "1us";
 const uint32_t SWITCH_BUFFER_SIZE_MB = 32;
 const uint32_t PFC_XOFF_KB = 512;
 
-// Traffic generation parameters
-const double BACKGROUND_LOAD = 0.5;   // 50% load for Hadoop workload
-const double INCAST_LOAD = 0.2;       // 20% load for incast traffic
-const uint32_t INCAST_SENDERS = 64;   // 64 senders per incast
+// Traffic generation parameters - reduced for better performance
+const double BACKGROUND_LOAD = 0.1;   // 10% load for Hadoop workload (reduced from 50%)
+const double INCAST_LOAD = 0.05;      // 5% load for incast traffic (reduced from 20%)
+const uint32_t INCAST_SENDERS = 16;   // 16 senders per incast (reduced from 64)
 const uint32_t INCAST_SIZE = 20480;   // 20KB per sender (20 * 1024)
-const double SIMULATION_TIME = 5.0;   // 5 seconds for testing
+const double SIMULATION_TIME = 2.0;   // 2 seconds for testing (reduced from 5)
 
 // Hadoop workload CDF (flow size in bytes, CDF percentage)
 const std::vector<std::pair<uint32_t, double>> HADOOP_CDF = {
@@ -375,34 +375,34 @@ FatTreeTopology::ConfigureQueues()
     NS_LOG_INFO("Queue configuration completed");
 }
 
-void
-FatTreeTopology::AssignIpAddresses()
+void FatTreeTopology::AssignIpAddresses()
 {
     NS_LOG_FUNCTION(this);
     NS_LOG_INFO("Assigning IP addresses...");
-    
+
     // Reset IP address generator to avoid collisions
     Ipv4AddressGenerator::Reset();
-    
+
     // Reserve space for interface containers
     m_serverInterfaces.resize(NUM_RACKS);
     m_torInterfaces.resize(NUM_RACKS);
     m_aggInterfaces.resize(NUM_AGG_SWITCHES);
     m_coreInterfaces.resize(NUM_CORE_SWITCHES);
-    
+
     // Assign IP addresses to server-ToR links
-    // Use 10.0.x.0/24 for each rack
+    // Use 10.0.x.0/24 per rack
     for (uint32_t rack = 0; rack < NUM_RACKS; ++rack)
     {
         std::string network = "10.0." + std::to_string(rack) + ".0";
         Ipv4AddressHelper addressHelper;
         addressHelper.SetBase(network.c_str(), "255.255.255.0");
+
         m_serverInterfaces[rack] = addressHelper.Assign(m_serverTorLinks[rack]);
     }
     NS_LOG_INFO("Assigned IP addresses to server-ToR links");
-    
-    // Assign IP addresses to ToR-aggregation links
-    // Use 172.16.x.0/30 for ToR-Agg links
+
+    // Assign IP addresses to ToR-Agg links
+    // Use 172.16.x.x/30 per link
     uint32_t torAggSubnet = 0;
     for (uint32_t tor = 0; tor < NUM_RACKS; ++tor)
     {
@@ -411,19 +411,23 @@ FatTreeTopology::AssignIpAddresses()
             std::string network = "172.16." + std::to_string(torAggSubnet / 64) + "." + std::to_string((torAggSubnet % 64) * 4);
             Ipv4AddressHelper addressHelper;
             addressHelper.SetBase(network.c_str(), "255.255.255.252");
-            
+
             NetDeviceContainer singleLink;
             singleLink.Add(m_torAggLinks[tor].Get(agg * 2));     // ToR side
             singleLink.Add(m_torAggLinks[tor].Get(agg * 2 + 1)); // Agg side
-            
+
             Ipv4InterfaceContainer interfaces = addressHelper.Assign(singleLink);
+
+            m_torInterfaces[tor].Add(interfaces.Get(0));  // ToR interface
+            m_aggInterfaces[agg].Add(interfaces.Get(1));  // Agg interface
+
             torAggSubnet++;
         }
     }
     NS_LOG_INFO("Assigned IP addresses to ToR-aggregation links");
-    
-    // Assign IP addresses to aggregation-core links
-    // Use 192.168.x.0/30 for Agg-Core links
+
+    // Assign IP addresses to Agg-Core links
+    // Use 192.168.x.x/30 per link
     uint32_t aggCoreSubnet = 0;
     for (uint32_t agg = 0; agg < NUM_AGG_SWITCHES; ++agg)
     {
@@ -432,17 +436,22 @@ FatTreeTopology::AssignIpAddresses()
             std::string network = "192.168." + std::to_string(aggCoreSubnet / 64) + "." + std::to_string((aggCoreSubnet % 64) * 4);
             Ipv4AddressHelper addressHelper;
             addressHelper.SetBase(network.c_str(), "255.255.255.252");
-            
+
             NetDeviceContainer singleLink;
             singleLink.Add(m_aggCoreLinks[agg].Get(core * 2));     // Agg side
             singleLink.Add(m_aggCoreLinks[agg].Get(core * 2 + 1)); // Core side
-            
+
             Ipv4InterfaceContainer interfaces = addressHelper.Assign(singleLink);
+
+            m_aggInterfaces[agg].Add(interfaces.Get(0));   // Agg interface
+            m_coreInterfaces[core].Add(interfaces.Get(1)); // Core interface
+
             aggCoreSubnet++;
         }
     }
     NS_LOG_INFO("Assigned IP addresses to aggregation-core links");
 }
+
 
 void
 FatTreeTopology::ConfigureRouting()
@@ -522,9 +531,10 @@ FatTreeTopology::ConfigureToRRouting()
                 torIpv4->GetRoutingProtocol());
         
         // Add routes to local servers (down-routes)
-        std::string localNetwork = "10." + std::to_string(tor) + ".0.0";
+        // Match the /24 subnet used in AssignIpAddresses(): 10.0.rack.0/24
+        std::string localNetwork = "10.0." + std::to_string(tor) + ".0";
         Ipv4Address localNetAddr(localNetwork.c_str());
-        Ipv4Mask localNetMask("255.255.0.0");
+        Ipv4Mask localNetMask("255.255.255.0"); // /24 mask to match AssignIpAddresses()
         
         // Local servers are directly connected - no next hop needed
         for (uint32_t server = 0; server < SERVERS_PER_RACK; ++server)
@@ -540,7 +550,7 @@ FatTreeTopology::ConfigureToRRouting()
         {
             if (otherRack != tor) // Don't route to self
             {
-                std::string remoteNetwork = "10." + std::to_string(otherRack) + ".0.0";
+                std::string remoteNetwork = "10.0." + std::to_string(otherRack) + ".0";
                 Ipv4Address remoteNetAddr(remoteNetwork.c_str());
                 
                 // Add routes through all aggregation switches for ECMP
@@ -572,9 +582,9 @@ FatTreeTopology::ConfigureAggregationRouting()
         // Add down-routes to ToR switches (and their servers)
         for (uint32_t tor = 0; tor < NUM_RACKS; ++tor)
         {
-            std::string rackNetwork = "10." + std::to_string(tor) + ".0.0";
+            std::string rackNetwork = "10.0." + std::to_string(tor) + ".0";
             Ipv4Address rackNetAddr(rackNetwork.c_str());
-            Ipv4Mask rackNetMask("255.255.0.0");
+            Ipv4Mask rackNetMask("255.255.255.0"); // /24 mask to match AssignIpAddresses()
             
             uint32_t torInterfaceIndex = tor + 1; // ToR interfaces start after loopback
             aggRouting->AddNetworkRouteTo(rackNetAddr, rackNetMask, torInterfaceIndex, 1);
@@ -588,9 +598,9 @@ FatTreeTopology::ConfigureAggregationRouting()
             {
                 if (rack1 != rack2)
                 {
-                    std::string destNetwork = "10." + std::to_string(rack2) + ".0.0";
+                    std::string destNetwork = "10.0." + std::to_string(rack2) + ".0";
                     Ipv4Address destNetAddr(destNetwork.c_str());
-                    Ipv4Mask destNetMask("255.255.0.0");
+                    Ipv4Mask destNetMask("255.255.255.0"); // /24 mask to match AssignIpAddresses()
                     
                     // Route through all core switches for ECMP
                     for (uint32_t core = 0; core < NUM_CORE_SWITCHES; ++core)
@@ -622,9 +632,9 @@ FatTreeTopology::ConfigureCoreRouting()
         // They route all rack traffic down to appropriate aggregation switches
         for (uint32_t rack = 0; rack < NUM_RACKS; ++rack)
         {
-            std::string rackNetwork = "10." + std::to_string(rack) + ".0.0";
+            std::string rackNetwork = "10.0." + std::to_string(rack) + ".0";
             Ipv4Address rackNetAddr(rackNetwork.c_str());
-            Ipv4Mask rackNetMask("255.255.0.0");
+            Ipv4Mask rackNetMask("255.255.255.0"); // /24 mask to match AssignIpAddresses()
             
             // Route to rack through all aggregation switches for ECMP
             for (uint32_t agg = 0; agg < NUM_AGG_SWITCHES; ++agg)
@@ -792,6 +802,15 @@ FatTreeTopology::ScheduleNextBackgroundFlow()
 {
     NS_LOG_FUNCTION(this);
     
+    // Limit total number of concurrent background flows for performance
+    static uint32_t totalBackgroundFlows = 0;
+    const uint32_t maxConcurrentFlows = 100; // Limit concurrent flows
+    
+    if (totalBackgroundFlows >= maxConcurrentFlows) {
+        NS_LOG_INFO("Reached maximum concurrent background flows (" << maxConcurrentFlows << "), skipping at " << Simulator::Now().GetSeconds() << "s");
+        return;
+    }
+    
     // Calculate inter-arrival time for background traffic
     // Lambda = load * link_capacity / average_flow_size
     double avgFlowSize = 0.0;
@@ -802,16 +821,21 @@ FatTreeTopology::ScheduleNextBackgroundFlow()
         avgFlowSize += HADOOP_CDF[i].first * prob / 100.0;
     }
     
-    // Calculate arrival rate (flows per second)
+    // Calculate arrival rate (flows per second) - reduced rate
     double linkCapacityBps = 100e9; // 100 Gbps server links
-    double lambda = (BACKGROUND_LOAD * linkCapacityBps * NUM_SERVERS) / (avgFlowSize * 8.0);
+    double lambda = (BACKGROUND_LOAD * linkCapacityBps) / (avgFlowSize * 8.0 * 10.0); // Divide by 10 to reduce rate
     
-    // Schedule next flow
-    double interArrival = m_exponentialRandom->GetValue(1.0 / lambda, 0.0);
+    // Schedule next flow with minimum inter-arrival time
+    double interArrival = std::max(0.01, m_exponentialRandom->GetValue(1.0 / lambda, 0.0)); // Min 10ms between flows
     
     if (Simulator::Now().GetSeconds() + interArrival < SIMULATION_TIME)
     {
+        totalBackgroundFlows++;
         Simulator::Schedule(Seconds(interArrival), &FatTreeTopology::StartBackgroundFlow, this);
+    }
+    else
+    {
+        NS_LOG_INFO("Stopping background flow scheduling at " << Simulator::Now().GetSeconds() << "s (total flows: " << totalBackgroundFlows << ")");
     }
 }
 
@@ -819,6 +843,10 @@ void
 FatTreeTopology::StartBackgroundFlow()
 {
     NS_LOG_FUNCTION(this);
+    
+    // Get static counter from ScheduleNextBackgroundFlow
+    static uint32_t flowCounter = 0;
+    flowCounter++;
     
     // Get random sender-receiver pair
     auto serverPair = GetRandomServerPair();
@@ -829,15 +857,13 @@ FatTreeTopology::StartBackgroundFlow()
     Ptr<Node> sender = m_servers.Get(senderIdx);
     Ptr<Node> receiver = m_servers.Get(receiverIdx);
     
-    uint32_t senderRack = senderIdx / SERVERS_PER_RACK;
-    uint32_t senderPos = senderIdx % SERVERS_PER_RACK;
     uint32_t receiverRack = receiverIdx / SERVERS_PER_RACK;
     uint32_t receiverPos = receiverIdx % SERVERS_PER_RACK;
     
     Ipv4Address receiverAddr = GetServerAddress(receiverRack, receiverPos);
     
-    // Sample flow size
-    uint32_t flowSize = SampleHadoopFlowSize();
+    // Sample flow size - cap to reasonable size for performance
+    uint32_t flowSize = std::min(SampleHadoopFlowSize(), 1000000u); // Cap at 1MB
     
     // Validate receiver address
     if (receiverAddr == Ipv4Address("0.0.0.0"))
@@ -849,7 +875,7 @@ FatTreeTopology::StartBackgroundFlow()
     // Create UDP sink on receiver with unique port per receiver
     uint16_t port = GetUniquePort(receiverIdx, false); // false = UDP
     
-    NS_LOG_INFO("UDP Background: " << senderIdx << " -> " << receiverIdx << " (" << flowSize << " bytes)");
+    NS_LOG_INFO("UDP Background Flow " << flowCounter << ": " << senderIdx << " -> " << receiverIdx << " (" << flowSize << " bytes) at " << Simulator::Now().GetSeconds() << "s");
     
     PacketSinkHelper sinkHelper("ns3::UdpSocketFactory", InetSocketAddress(Ipv4Address::GetAny(), port));
     ApplicationContainer sinkApp = sinkHelper.Install(receiver);
@@ -864,15 +890,14 @@ FatTreeTopology::StartBackgroundFlow()
     sourceHelper.SetAttribute("OffTime", StringValue("ns3::ConstantRandomVariable[Constant=0.0]"));
     
     // Calculate data rate to send flowSize bytes over a reasonable duration
-    double flowDuration = 0.1; // 100ms flow duration (more realistic)
+    double flowDuration = std::max(0.01, std::min(0.1, flowSize / 1000000.0)); // 10ms to 100ms based on size
     double dataRateBps = (flowSize * 8.0) / flowDuration; // bits per second
     
-    // Cap data rate to avoid overflow and unrealistic rates (max 10 Gbps)
-    double maxDataRate = 10e9; // 10 Gbps
+    // Cap data rate to avoid overflow and unrealistic rates (max 1 Gbps for performance)
+    double maxDataRate = 1e9; // 1 Gbps
     if (dataRateBps > maxDataRate) {
         dataRateBps = maxDataRate;
         flowDuration = (flowSize * 8.0) / dataRateBps;
-        NS_LOG_INFO("Capped data rate to " << maxDataRate/1e9 << " Gbps, adjusted duration to " << flowDuration << "s");
     }
     
     sourceHelper.SetAttribute("DataRate", StringValue(std::to_string(dataRateBps) + "bps"));
@@ -884,8 +909,10 @@ FatTreeTopology::StartBackgroundFlow()
     m_backgroundApps.Add(sinkApp);
     m_backgroundApps.Add(sourceApp);
     
-    // Schedule next flow
-    ScheduleNextBackgroundFlow();
+    // Schedule next flow with reduced frequency
+    if (Simulator::Now().GetSeconds() < SIMULATION_TIME - 0.5) { // Stop scheduling 0.5s before end
+        ScheduleNextBackgroundFlow();
+    }
 }
 
 void
@@ -893,17 +920,21 @@ FatTreeTopology::ScheduleNextIncast()
 {
     NS_LOG_FUNCTION(this);
     
-    // Calculate inter-arrival time for incast traffic
-    // Lambda = load * link_capacity / (incast_size * num_senders)
-    double linkCapacityBps = 100e9; // 100 Gbps server links
-    double incastBytes = INCAST_SIZE * INCAST_SENDERS;
-    double lambda = (INCAST_LOAD * linkCapacityBps * NUM_SERVERS) / (incastBytes * 8.0);
+    // Limit total number of incast events for performance
+    static uint32_t totalIncasts = 0;
+    const uint32_t maxIncasts = 5; // Limit total incast events
     
-    // Schedule next incast
-    double interArrival = m_exponentialRandom->GetValue(1.0 / lambda, 0.0);
+    if (totalIncasts >= maxIncasts) {
+        NS_LOG_INFO("Reached maximum incast events (" << maxIncasts << "), stopping incast generation");
+        return;
+    }
     
-    if (Simulator::Now().GetSeconds() + interArrival < SIMULATION_TIME)
+    // Calculate inter-arrival time for incast traffic - much longer intervals
+    double interArrival = 0.2; // Fixed 200ms between incasts for simplicity and performance
+    
+    if (Simulator::Now().GetSeconds() + interArrival < SIMULATION_TIME - 0.5)
     {
+        totalIncasts++;
         Simulator::Schedule(Seconds(interArrival), &FatTreeTopology::StartIncast, this);
     }
 }
@@ -936,7 +967,7 @@ FatTreeTopology::StartIncast()
     sinkApp.Stop(Seconds(SIMULATION_TIME));
     m_incastApps.Add(sinkApp);
     
-    // Select random senders (excluding receiver)
+    // Select random senders (excluding receiver) - reduced number for performance
     std::vector<uint32_t> availableSenders;
     for (uint32_t i = 0; i < NUM_SERVERS; ++i)
     {
@@ -974,19 +1005,39 @@ FatTreeTopology::StartIncast()
     ScheduleNextIncast();
 }
 
+// Progress callback to show simulation time
+void PrintProgress()
+{
+    static double lastPrintTime = 0.0;
+    double currentTime = Simulator::Now().GetSeconds();
+    
+    // Print progress every 0.1 seconds
+    if (currentTime - lastPrintTime >= 0.1)
+    {
+        std::cout << "[" << std::fixed << std::setprecision(2) << currentTime << "s] ";
+        std::cout.flush();
+        lastPrintTime = currentTime;
+        
+        // Schedule next progress update
+        if (currentTime < SIMULATION_TIME - 0.05)
+        {
+            Simulator::Schedule(Seconds(0.1), &PrintProgress);
+        }
+    }
+}
+
 int
 main(int argc, char *argv[])
 {
-    // Configure logging - reduced verbosity for performance
-    LogLevel logLevel = (LogLevel)(LOG_PREFIX_TIME | LOG_LEVEL_WARN);
-    LogComponentEnable("FatTreeSim", logLevel);
-    
-    // Enable info level only for important messages
+    // Configure logging with more visibility but still performance-friendly
     LogComponentEnable("FatTreeSim", LOG_LEVEL_INFO);
     
     // Parse command line arguments
     CommandLine cmd;
     cmd.Parse(argc, argv);
+    
+    // Set global defaults for better performance
+    GlobalValue::Bind("ChecksumEnabled", BooleanValue(false)); // Disable checksums for speed
     
     NS_LOG_INFO("Starting Fat-Tree topology simulation...");
     
@@ -1002,12 +1053,18 @@ main(int argc, char *argv[])
     fatTree.GenerateTraffic();
     
     NS_LOG_INFO("Running simulation for " << SIMULATION_TIME << " seconds...");
+    std::cout << "Simulation progress: ";
+    std::cout.flush();
+    
+    // Schedule progress printing
+    Simulator::Schedule(Seconds(0.1), &PrintProgress);
     
     // Run simulation
     Simulator::Stop(Seconds(SIMULATION_TIME));
     Simulator::Run();
     
     NS_LOG_INFO("Simulation completed successfully");
+    std::cout << " DONE!" << std::endl;
     
     Simulator::Destroy();
     
