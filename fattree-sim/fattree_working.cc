@@ -75,11 +75,11 @@ const uint32_t SWITCH_BUFFER_SIZE_MB = 32;
 const uint32_t PFC_XOFF_KB = 512;
 
 // Traffic generation parameters
-const double BACKGROUND_LOAD = 0.1;  // Reduced to 10% for testing
-const double INCAST_LOAD = 0.05;     // Reduced to 5% for testing
-const uint32_t INCAST_SENDERS = 16;  // Reduced from 64 to 16 for testing
-const uint32_t INCAST_SIZE = 10240;  // Reduced to 10KB for testing
-const double SIMULATION_TIME = 0.50;  // Reduced to 5 seconds for testing
+const double BACKGROUND_LOAD = 0.5;   // 50% load for Hadoop workload
+const double INCAST_LOAD = 0.2;       // 20% load for incast traffic
+const uint32_t INCAST_SENDERS = 64;   // 64 senders per incast
+const uint32_t INCAST_SIZE = 20480;   // 20KB per sender (20 * 1024)
+const double SIMULATION_TIME = 5.0;   // 5 seconds for testing
 
 // Hadoop workload CDF (flow size in bytes, CDF percentage)
 const std::vector<std::pair<uint32_t, double>> HADOOP_CDF = {
